@@ -1,20 +1,40 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+export const dynamic = 'force-dynamic';
+
+import { useEffect, useState, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft } from 'lucide-react';
-import { VerificationReport, VerificationResult, TextEvidenceRange } from '@/types';
+import { ArrowLeft, ChevronLeft, ChevronRight, ZoomIn, ZoomOut } from 'lucide-react';
+import NextDynamic from 'next/dynamic';
+import 'react-pdf/dist/Page/AnnotationLayer.css';
+import 'react-pdf/dist/Page/TextLayer.css';
+import { VerificationReport, VerificationResult, TokenEvidenceAnchor } from '@/types';
 
+const PDFDocument: any = NextDynamic(async () => (await import('react-pdf')).Document, { ssr: false });
+const PDFPage: any = NextDynamic(async () => (await import('react-pdf')).Page, { ssr: false });
 
 export default function ReportViewerPage() {
   const router = useRouter();
+  const [pdfDoc, setPdfDoc] = useState<any>(null);
+  const [pdfOk, setPdfOk] = useState<boolean | null>(null);
+  const [pdfErr, setPdfErr] = useState<string | null>(null);
+
+  const [workerReady, setWorkerReady] = useState(false);
+
   const [report, setReport] = useState<VerificationReport | null>(null);
   const [selectedItemId, setSelectedItemId] = useState<number | null>(null);
-  const [documentText, setDocumentText] = useState<string>('');
-  const textViewerRef = useRef<HTMLDivElement>(null);
+  const [pdfUrl, setPdfUrl] = useState<string>('');
+  const [numPages, setNumPages] = useState<number>(0);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [scale, setScale] = useState<number>(1.0);
+  const pageContainerRef = useRef<HTMLDivElement>(null);
+  const [highlights, setHighlights] = useState<Array<{left:number;top:number;width:number;height:number}>>([]);
+  const [reloadKey, setReloadKey] = useState<number>(0);
+
+  const pdfFile = useMemo(() => (pdfUrl ? { url: pdfUrl, withCredentials: true } : undefined), [pdfUrl]);
 
   useEffect(() => {
     // Load report from session storage
@@ -23,7 +43,7 @@ export default function ReportViewerPage() {
       const parsedReport = JSON.parse(reportData);
       setReport(parsedReport);
 
-      // Fetch extracted document text by filename
+      // Set PDF URL from document path or name
       let filename: string | undefined;
       if (parsedReport.documentPath) {
         filename = parsedReport.documentPath.split('/').pop();
@@ -31,70 +51,165 @@ export default function ReportViewerPage() {
         filename = parsedReport.documentName;
       }
       if (filename) {
-        fetch(`/api/get-text?filename=${encodeURIComponent(filename)}`)
-          .then(async (res) => (res.ok ? res.text() : ''))
-          .then((txt) => setDocumentText(txt || ''))
-          .catch(() => setDocumentText(''));
+        const url = `/api/serve-pdf?filename=${encodeURIComponent(filename)}`;
+        console.info('PDF URL set:', url);
+        setPdfUrl(url);
+        fetch(url, { method: 'HEAD' })
+          .then(res => { setPdfOk(res.ok); setPdfErr(res.ok ? null : `${res.status} ${res.statusText}`); console.info('PDF HEAD check', res.status, res.statusText); })
+          .catch(err => { setPdfOk(false); setPdfErr(String(err)); console.warn('PDF HEAD error', err); });
       }
     }
+
   }, []);
 
+  // Configure PDF.js worker on client (bundle-served, no CDN)
+  useEffect(() => {
+    (async () => {
+      try {
+        const mod = await import('react-pdf');
+        mod.pdfjs.GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+        setWorkerReady(true);
+      } catch {
+        try {
+          const mod = await import('react-pdf');
+          mod.pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+          setWorkerReady(true);
+        } catch (e) {
+          console.error('Failed to configure PDF.js worker', e);
+          setWorkerReady(false);
+        }
+      }
+    })();
+  }, []);
 
-  const handleItemClick = (result: VerificationResult) => {
+  // Watchdog: if PDF stays in loading state too long (no pdfDoc, no error), force a reload
+  useEffect(() => {
+    if (!pdfUrl || !workerReady) return;
+    const id = setTimeout(() => {
+      if (!pdfDoc && pdfErr == null && pdfOk !== false) {
+        console.warn('PDF took too long to load, retrying...');
+        setReloadKey((k) => k + 1);
+      }
+    }, 15000);
+    return () => clearTimeout(id);
+  }, [pdfUrl, workerReady, pdfDoc, pdfErr, pdfOk]);
+
+
+  const onDocumentLoadSuccess = (pdf: any) => {
+    try {
+      setPdfDoc(pdf);
+      setNumPages(pdf?.numPages || 0);
+      console.info('PDF loaded:', { pages: pdf?.numPages });
+    } catch {}
+  };
+
+  const handleItemClick = async (result: VerificationResult) => {
     setSelectedItemId(result.itemId);
-    // Scroll the text viewer to the first highlight (if any)
-    setTimeout(() => {
-      const container = textViewerRef.current || document;
-      const first = container.querySelector('#first-highlight') as HTMLElement | null;
-      if (first) {
-        first.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 100);
+    const anchors = (result.evidence?.tokens || []) as TokenEvidenceAnchor[];
+    const target = anchors.find(a => typeof a.pageNumber === 'number');
+    if (target?.pageNumber) {
+      setCurrentPage(target.pageNumber);
+    } else if (pdfDoc && anchors.length && numPages > 0) {
+      // Try to find the first page that matches any token anchor
+      const page = await findPageForTokens(anchors);
+      if (page) setCurrentPage(page);
+    }
+    setTimeout(() => updateHighlightsForCurrentPage(), 200);
   };
 
-  // Render the document text with highlighted evidence ranges
-  const renderHighlightedText = (
-    text: string,
-    ranges?: TextEvidenceRange[]
-  ) => {
-    if (!ranges || ranges.length === 0) {
-      return <pre className="whitespace-pre-wrap break-words">{text}</pre>;
-    }
-
-    // Normalize and merge overlapping ranges
-    const sorted = [...ranges]
-      .map(r => ({ start: Math.max(0, r.start), end: Math.min(text.length, r.end) }))
-      .filter(r => r.end > r.start)
-      .sort((a, b) => a.start - b.start);
-
-    const merged: { start: number; end: number }[] = [];
-    for (const r of sorted) {
-      if (!merged.length || r.start > merged[merged.length - 1].end) {
-        merged.push({ start: r.start, end: r.end });
-      } else {
-        merged[merged.length - 1].end = Math.max(merged[merged.length - 1].end, r.end);
+  async function findPageForTokens(anchors: TokenEvidenceAnchor[]): Promise<number | null> {
+    try {
+      const startPhrases = anchors.map(a => (a.startTokens || []).join(' ').toLowerCase()).filter(Boolean);
+      const endPhrases = anchors.map(a => (a.endTokens || []).join(' ').toLowerCase()).filter(Boolean);
+      if (!startPhrases.length || !endPhrases.length) return null;
+      // Scan pages sequentially; optimize later if needed
+      for (let p = 1; p <= numPages; p++) {
+        const page = await pdfDoc.getPage(p);
+        const content = await page.getTextContent();
+        const combined = (content.items || []).map((it:any)=>String(it.str||'')).join(' ').toLowerCase();
+        let matched = false;
+        for (let i = 0; i < startPhrases.length; i++) {
+          const s = startPhrases[i];
+          const e = endPhrases[i] || endPhrases[0];
+          const si = combined.indexOf(s);
+          if (si >= 0) {
+            const ei = combined.indexOf(e, si + s.length);
+            if (ei >= 0) { matched = true; break; }
+          }
+        }
+        if (matched) return p;
       }
+      return null;
+    } catch (e) {
+      console.warn('findPageForTokens error', e); return null;
     }
+  }
 
-    const nodes: React.ReactNode[] = [];
-    let last = 0;
-    merged.forEach((r, idx) => {
-      if (r.start > last) {
-        nodes.push(<span key={`t-${idx}`}>{text.substring(last, r.start)}</span>);
-      }
-      nodes.push(
-        <mark key={`h-${idx}`} id={idx === 0 ? 'first-highlight' : undefined} className="bg-yellow-200 rounded px-0.5">
-          {text.substring(r.start, r.end)}
-        </mark>
-      );
-      last = r.end;
-    });
-    if (last < text.length) {
-      nodes.push(<span key="t-end">{text.substring(last)}</span>);
+  const handlePreviousPage = () => setCurrentPage(p => Math.max(1, p - 1));
+  const handleNextPage = () => setCurrentPage(p => Math.min(numPages, p + 1));
+  const handleZoomIn = () => setScale(s => Math.min(3.0, s + 0.2));
+  const handleZoomOut = () => setScale(s => Math.max(0.5, s - 0.2));
+  // Recompute highlights when page or selection changes
+  useEffect(() => {
+    const t = setTimeout(() => updateHighlightsForCurrentPage(), 250);
+    return () => clearTimeout(t);
+  }, [currentPage, selectedItemId, scale]);
+
+  function updateHighlightsForCurrentPage() {
+    try {
+      if (!report) return setHighlights([]);
+      const selected = report.results.find(r => r.itemId === selectedItemId);
+      const anchors: TokenEvidenceAnchor[] = (selected?.evidence?.tokens || []) as TokenEvidenceAnchor[];
+      const pageEl = pageContainerRef.current as HTMLElement | null;
+      if (!pageEl || !anchors.length) { setHighlights([]); return; }
+      const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
+      if (!textLayer) { setHighlights([]); return; }
+      const spans = Array.from(textLayer.querySelectorAll('span')) as HTMLSpanElement[];
+      if (!spans.length) { setHighlights([]); return; }
+
+      // Build page text and mapping indices to spans
+      let offset = 0;
+      const mapping = spans.map((el) => {
+        const text = (el.textContent || '');
+        const start = offset;
+        const end = start + text.length;
+        offset = end + 1; // plus separator space
+        return { el, text, start, end };
+      });
+      const pageText = mapping.map(m => m.text).join(' ').toLowerCase();
+
+      const rects: Array<{left:number;top:number;width:number;height:number}> = [];
+      anchors.forEach(a => {
+        if (a.pageNumber && a.pageNumber !== currentPage) return;
+        const startPhrase = (a.startTokens || []).join(' ').toLowerCase();
+        const endPhrase = (a.endTokens || []).join(' ').toLowerCase();
+        if (!startPhrase || !endPhrase) return;
+        let from = 0;
+        while (true) {
+          const sIdx = pageText.indexOf(startPhrase, from);
+          if (sIdx === -1) break;
+          const eIdx = pageText.indexOf(endPhrase, sIdx + startPhrase.length);
+          if (eIdx === -1) { from = sIdx + 1; continue; }
+          const matchStart = sIdx;
+          const matchEnd = eIdx + endPhrase.length;
+          // Map to span rects for this occurrence
+          mapping.forEach(m => {
+            if (m.end <= matchStart || m.start >= matchEnd) return;
+            const r = m.el.getBoundingClientRect();
+            const c = (pageEl as HTMLElement).getBoundingClientRect();
+            rects.push({ left: r.left - c.left, top: r.top - c.top, width: r.width, height: r.height });
+          });
+          from = sIdx + 1; // continue searching for additional occurrences
+        }
+      });
+      setHighlights(rects);
+    } catch (e) {
+      console.warn('Failed to compute highlights:', e);
+      setHighlights([]);
     }
+  }
 
-    return <pre className="whitespace-pre-wrap break-words">{nodes}</pre>;
-  };
+
 
   const getStatusColor = (status: 'verified' | 'failed') => {
     return status === 'verified' ? 'bg-green-500' : 'bg-red-500';
@@ -181,8 +296,8 @@ export default function ReportViewerPage() {
                         {result.evidence.text}
                       </p>
                       <div className="flex items-center gap-4 text-xs text-gray-500">
-                        {Array.isArray(result.evidence.ranges) && result.evidence.ranges.length > 0 && (
-                          <span>{result.evidence.ranges.length} evidence segment(s)</span>
+                        {Array.isArray(result.evidence.tokens) && result.evidence.tokens.length > 0 && (
+                          <span>{result.evidence.tokens.length} evidence segment(s)</span>
                         )}
                         {typeof result.evidence.confidence === 'number' && (
                           <span>Confidence: {(result.evidence.confidence * 100).toFixed(0)}%</span>
@@ -201,25 +316,63 @@ export default function ReportViewerPage() {
           </div>
         </div>
 
-        {/* Right Panel - Text Viewer */}
+        {/* Right Panel - PDF Viewer */}
         <div className="flex-1 bg-gray-100 overflow-hidden flex flex-col">
+          {/* PDF Controls */}
           <div className="bg-white border-b p-4 flex items-center justify-between">
-            <div className="text-sm text-gray-600">
-              {documentText ? (
-                <span>Showing extracted text ({documentText.length.toLocaleString()} chars)</span>
-              ) : (
-                <span>Loading text…</span>
-              )}
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={handlePreviousPage} disabled={currentPage <= 1}>
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <span className="text-sm font-medium">Page {currentPage} of {numPages}</span>
+              <Button variant="outline" size="sm" onClick={handleNextPage} disabled={currentPage >= numPages}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={handleZoomOut}>
+                <ZoomOut className="h-4 w-4" />
+              </Button>
+              <span className="text-sm font-medium">{Math.round(scale * 100)}%</span>
+              <Button variant="outline" size="sm" onClick={handleZoomIn}>
+                <ZoomIn className="h-4 w-4" />
+              </Button>
             </div>
           </div>
 
-          <div ref={textViewerRef} className="flex-1 overflow-auto p-6">
-            <div className="bg-white shadow rounded p-6">
-              {renderHighlightedText(
-                documentText,
-                report.results.find(r => r.itemId === selectedItemId)?.evidence.ranges
-              )}
-            </div>
+          {/* PDF Document */}
+          <div className="flex-1 overflow-auto p-8 flex flex-col items-center gap-3">
+            {pdfErr && (
+              <div className="w-full max-w-3xl px-4 py-2 bg-red-50 text-red-700 border border-red-200 rounded">
+                Failed to load PDF: {pdfErr}. If this report references an old upload, please re-upload/process, then open Interactive View again.
+              </div>
+            )}
+            {pdfOk === false && !pdfErr && (
+              <div className="w-full max-w-3xl px-4 py-2 bg-yellow-50 text-yellow-800 border border-yellow-200 rounded">
+                PDF file not found on server. It may have been cleaned up or the name changed. Re-upload and re-process the document to refresh the link.
+              </div>
+            )}
+            {pdfUrl && workerReady ? (
+              <div className="relative bg-white shadow-lg">
+                <PDFDocument key={`${pdfUrl}-${reloadKey}`} file={pdfFile as any} onLoadSuccess={onDocumentLoadSuccess} onLoadError={(e:any)=>{ console.error('PDF load error', e); setPdfErr(String(e)); }} loading={<div className="p-8">Loading PDF...</div>}>
+                  <div className="relative" ref={pageContainerRef}>
+                    <PDFPage pageNumber={currentPage} scale={scale} renderTextLayer={true} renderAnnotationLayer={true} onRenderSuccess={() => updateHighlightsForCurrentPage()} />
+                    {/* Highlight overlays for current page */}
+                    {highlights.map((rect, idx) => (
+                      <div
+                        key={idx}
+                        className={`absolute border-2 ${selectedItemId ? 'border-blue-500 bg-blue-200/30' : 'border-yellow-500 bg-yellow-200/30'} transition-all`}
+                        style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
+                      />
+                    ))}
+                  </div>
+                </PDFDocument>
+              </div>
+            ) : (
+              <div className="flex items-center justify-center">
+                <p className="text-gray-600">No PDF available</p>
+              </div>
+            )}
           </div>
         </div>
       </div>

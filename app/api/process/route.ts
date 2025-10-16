@@ -75,8 +75,8 @@ async function callRealDatabricksAPI(
     console.log(`[VERIFY] Using provided text; length=${documentContent.length}; preview=`, preview);
 
 
-    // Construct prompt for LLM to verify the checklist item and return character offsets for evidence
-    const prompt = `You are a document verification assistant. Analyze the following document and determine if it contains the required information.
+    // Construct prompt for LLM to verify the checklist item and return token-based anchors for evidence
+    const prompt = `You are a document verification assistant. Analyze the following document text and determine if it contains the required information.
 
 Document Content (${documentContent.length} characters):
 ${documentContent}
@@ -84,26 +84,25 @@ ${documentContent}
 Verification Criteria:
 ${checklistItem.description}: ${checklistItem.criteria}
 
-IMPORTANT: You must identify the EXACT character positions in the document where evidence is found.
+IMPORTANT: For each piece of evidence, return TOKEN-BASED ANCHORS instead of character offsets.
+Return the first TWO tokens of the evidence text and the last TWO tokens of the evidence text.
+Also include the FULL evidence text for validation. If you know the page number, include it as page_number; otherwise use null.
 
 Respond in the following JSON format:
 {
   "status": "verified" | "failed",
-  "evidence_ranges": [
-    { "start": <number>, "end": <number>, "text": "<exact substring from document>" }
+  "evidence_tokens": [
+    { "start_tokens": ["<first token>", "<second token>"], "end_tokens": ["<second to last>", "<last>"], "full_text": "<exact evidence text>", "page_number": <number or null> }
   ],
   "confidence": <number between 0 and 1>,
   "reasoning": "<brief explanation>"
 }
 
 Rules:
-1. Character offsets are 0-indexed (first character is position 0)
-2. 'end' is exclusive (like substring: text.substring(start, end))
-3. Include ALL relevant evidence ranges (multiple non-contiguous sections allowed)
-4. The 'text' field must EXACTLY equal document.substring(start, end)
-5. If no evidence found, return an empty array for evidence_ranges
-
-Only respond with the JSON object, no additional text.`;
+1. Tokens are whitespace-separated words appearing EXACTLY in the document order.
+2. full_text MUST start with start_tokens joined by a space and end with end_tokens joined by a space.
+3. Include ALL relevant evidence segments.
+4. Keep full_text concise (<= 300 chars). Do not include JSON outside the object.`;
 
     // Call Databricks serving endpoint
     // Using the correct endpoint format: /serving-endpoints/<endpoint_name>/invocations
@@ -170,28 +169,34 @@ Only respond with the JSON object, no additional text.`;
       };
     }
 
-    // Build evidence ranges, with validation
-    const ranges = Array.isArray(parsedResult.evidence_ranges) ? parsedResult.evidence_ranges : [];
-    const validatedRanges = ranges
-      .map((r: any) => {
-        const start = Number(r?.start);
-        const end = Number(r?.end);
-        if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > documentContent.length) {
-          return null;
+    // Build token-based evidence anchors, with validation
+    const tokensArr = Array.isArray(parsedResult.evidence_tokens) ? parsedResult.evidence_tokens : [];
+    const validatedTokens = tokensArr
+      .map((t: any) => {
+        const st = Array.isArray(t?.start_tokens) ? t.start_tokens.slice(0, 2).map(String) : [];
+        const et = Array.isArray(t?.end_tokens) ? t.end_tokens.slice(-2).map(String) : [];
+        const full = typeof t?.full_text === 'string' ? t.full_text : '';
+        const pg = Number.isFinite(Number(t?.page_number)) ? Number(t.page_number) : undefined;
+        if (st.length !== 2 || et.length !== 2 || !full) return null;
+        // Basic validation: full_text begins/ends with token pairs (case-insensitive, whitespace-normalized)
+        const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+        const fullNorm = norm(full);
+        const stNorm = norm(st.join(' '));
+        const etNorm = norm(et.join(' '));
+        if (!fullNorm.startsWith(stNorm) || !fullNorm.endsWith(etNorm)) {
+          // still accept but keep as-is for UI search
         }
-        const slice = documentContent.substring(start, end);
-        // If provided text mismatches, keep slice but we can lower confidence later
-        return { start, end, text: slice };
+        return { startTokens: [st[0], st[1]] as [string, string], endTokens: [et[0], et[1]] as [string, string], fullText: full, pageNumber: pg };
       })
-      .filter(Boolean) as { start: number; end: number; text: string }[];
+      .filter(Boolean) as { startTokens: [string, string]; endTokens: [string, string]; fullText: string; pageNumber?: number }[];
 
     return {
       itemId: checklistItem.id,
       status: parsedResult.status === 'verified' ? 'verified' : 'failed',
       evidence: {
-        text: parsedResult.evidence_text || validatedRanges[0]?.text || 'No evidence provided',
+        text: parsedResult.evidence_text || validatedTokens[0]?.fullText || 'No evidence provided',
         confidence: typeof parsedResult.confidence === 'number' ? parsedResult.confidence : 0.5,
-        ranges: validatedRanges,
+        tokens: validatedTokens,
       },
       reason: parsedResult.reasoning || parsedResult.reason || 'Verification completed',
     };
@@ -227,21 +232,31 @@ async function callSimulatedAPI(
     .filter((w: string) => w.length >= 4)
     .slice(0, 5);
 
-  const ranges: { start: number; end: number; text: string }[] = [];
+  // Build a single token anchor from the first keyword occurrence
+  let tokens: { startTokens: [string, string]; endTokens: [string, string]; fullText: string; pageNumber?: number }[] = [];
+  let isVerified = false;
   for (const kw of keywords) {
     const idx = haystack.toLowerCase().indexOf(kw.toLowerCase());
     if (idx !== -1) {
-      ranges.push({ start: idx, end: idx + kw.length, text: haystack.substring(idx, idx + kw.length) });
-      if (ranges.length >= 3) break;
+      // Take a window around the keyword
+      const start = Math.max(0, idx - 20);
+      const end = Math.min(haystack.length, idx + kw.length + 20);
+      const snippet = haystack.substring(start, end).trim();
+      const words = snippet.split(/\s+/).filter(Boolean);
+      if (words.length >= 4) {
+        const st: [string, string] = [words[0], words[1]];
+        const et: [string, string] = [words[words.length - 2], words[words.length - 1]];
+        tokens = [{ startTokens: st, endTokens: et, fullText: snippet }];
+        isVerified = true;
+        break;
+      }
     }
   }
-
-  const isVerified = ranges.length > 0;
 
   const evidence: Evidence = {
     text: isVerified ? `Found evidence for ${checklistItem.description}` : `Not found: ${checklistItem.description}`,
     confidence: isVerified ? 0.8 : 0.4,
-    ranges,
+    tokens,
   };
 
   return {
