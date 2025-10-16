@@ -38,8 +38,9 @@ export async function GET(request: NextRequest) {
 
     try {
       const fileBuffer = await readFile(filepath);
-      
-      return new NextResponse(fileBuffer, {
+      const uint8 = new Uint8Array(fileBuffer);
+      const blob = new Blob([uint8], { type: 'application/pdf' });
+      return new NextResponse(blob, {
         headers: {
           'Content-Type': 'application/pdf',
           'Content-Disposition': `inline; filename="${filename}"`,

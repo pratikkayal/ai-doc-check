@@ -75,22 +75,33 @@ async function callRealDatabricksAPI(
     console.log(`[VERIFY] Using provided text; length=${documentContent.length}; preview=`, preview);
 
 
-    // Construct prompt for LLM to verify the checklist item
+    // Construct prompt for LLM to verify the checklist item and return character offsets for evidence
     const prompt = `You are a document verification assistant. Analyze the following document and determine if it contains the required information.
 
-Document Content:
+Document Content (${documentContent.length} characters):
 ${documentContent}
 
 Verification Criteria:
 ${checklistItem.description}: ${checklistItem.criteria}
 
-Please respond in the following JSON format:
+IMPORTANT: You must identify the EXACT character positions in the document where evidence is found.
+
+Respond in the following JSON format:
 {
-  "status": "verified" or "failed",
-  "evidence_text": "specific text or description of what was found or missing",
-  "confidence": a number between 0 and 1,
-  "reason": "brief explanation of the verification result"
+  "status": "verified" | "failed",
+  "evidence_ranges": [
+    { "start": <number>, "end": <number>, "text": "<exact substring from document>" }
+  ],
+  "confidence": <number between 0 and 1>,
+  "reasoning": "<brief explanation>"
 }
+
+Rules:
+1. Character offsets are 0-indexed (first character is position 0)
+2. 'end' is exclusive (like substring: text.substring(start, end))
+3. Include ALL relevant evidence ranges (multiple non-contiguous sections allowed)
+4. The 'text' field must EXACTLY equal document.substring(start, end)
+5. If no evidence found, return an empty array for evidence_ranges
 
 Only respond with the JSON object, no additional text.`;
 
@@ -131,7 +142,7 @@ Only respond with the JSON object, no additional text.`;
     }
 
     // Try to parse JSON from the response
-    let parsedResult;
+    let parsedResult: any;
     try {
       // Extract JSON from response (in case there's extra text)
       const jsonMatch = llmResponse.match(/\{[\s\S]*\}/);
@@ -152,21 +163,37 @@ Only respond with the JSON object, no additional text.`;
 
       parsedResult = {
         status: isVerified ? 'verified' : 'failed',
+        evidence_ranges: [],
         evidence_text: responseText.substring(0, 200),
         confidence: 0.5,
-        reason: 'Response parsing failed, using text analysis'
+        reasoning: 'Response parsing failed, using text analysis'
       };
     }
+
+    // Build evidence ranges, with validation
+    const ranges = Array.isArray(parsedResult.evidence_ranges) ? parsedResult.evidence_ranges : [];
+    const validatedRanges = ranges
+      .map((r: any) => {
+        const start = Number(r?.start);
+        const end = Number(r?.end);
+        if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end > documentContent.length) {
+          return null;
+        }
+        const slice = documentContent.substring(start, end);
+        // If provided text mismatches, keep slice but we can lower confidence later
+        return { start, end, text: slice };
+      })
+      .filter(Boolean) as { start: number; end: number; text: string }[];
 
     return {
       itemId: checklistItem.id,
       status: parsedResult.status === 'verified' ? 'verified' : 'failed',
       evidence: {
-        text: parsedResult.evidence_text || 'No evidence provided',
-        pageNumber: 1, // LLM doesn't provide page numbers
-        confidence: parsedResult.confidence || 0.5,
+        text: parsedResult.evidence_text || validatedRanges[0]?.text || 'No evidence provided',
+        confidence: typeof parsedResult.confidence === 'number' ? parsedResult.confidence : 0.5,
+        ranges: validatedRanges,
       },
-      reason: parsedResult.reason || 'Verification completed',
+      reason: parsedResult.reasoning || parsedResult.reason || 'Verification completed',
     };
   } catch (error) {
     console.error('Databricks API error:', error);
@@ -186,26 +213,35 @@ Only respond with the JSON object, no additional text.`;
 
 // Simulated/Fake API call for testing and development
 async function callSimulatedAPI(
-  token: string,
+  _token: string,
   documentText: string,
   checklistItem: any
 ): Promise<VerificationResult> {
   // Simulate processing delay (500ms to 1.5s for faster demo)
   await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1000));
 
-  // Simulate verification result with 70% success rate
-  const isVerified = Math.random() > 0.3;
+  // Simple heuristic: find occurrences of key words from the criteria/description
+  const haystack = documentText || '';
+  const keywords = String(`${checklistItem.description} ${checklistItem.criteria}`)
+    .split(/[^A-Za-z0-9]+/)
+    .filter((w: string) => w.length >= 4)
+    .slice(0, 5);
+
+  const ranges: { start: number; end: number; text: string }[] = [];
+  for (const kw of keywords) {
+    const idx = haystack.toLowerCase().indexOf(kw.toLowerCase());
+    if (idx !== -1) {
+      ranges.push({ start: idx, end: idx + kw.length, text: haystack.substring(idx, idx + kw.length) });
+      if (ranges.length >= 3) break;
+    }
+  }
+
+  const isVerified = ranges.length > 0;
 
   const evidence: Evidence = {
-    text: `Found: ${checklistItem.description} - ${isVerified ? 'Verified' : 'Not found'}`,
-    pageNumber: Math.floor(Math.random() * 5) + 1,
-    coordinates: {
-      x: Math.random() * 500,
-      y: Math.random() * 700,
-      width: 200,
-      height: 50,
-    },
-    confidence: isVerified ? 0.85 + Math.random() * 0.15 : 0.3 + Math.random() * 0.4,
+    text: isVerified ? `Found evidence for ${checklistItem.description}` : `Not found: ${checklistItem.description}`,
+    confidence: isVerified ? 0.8 : 0.4,
+    ranges,
   };
 
   return {

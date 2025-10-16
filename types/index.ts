@@ -7,10 +7,18 @@ export interface ChecklistItem {
   evidence?: Evidence;
 }
 
+// Evidence range for text highlighting
+export interface TextEvidenceRange {
+  start: number; // 0-indexed character offset (inclusive)
+  end: number;   // character offset (exclusive)
+  text: string;  // exact substring for validation
+}
+
 // Evidence structure for verification results
 export interface Evidence {
+  // Backward-compatible fields (kept for PDF mode, may be unused in text mode)
   text: string;
-  pageNumber: number;
+  pageNumber?: number;
   coordinates?: {
     x: number;
     y: number;
@@ -18,6 +26,8 @@ export interface Evidence {
     height: number;
   };
   confidence?: number;
+  // New: character offset ranges in extracted text
+  ranges?: TextEvidenceRange[];
 }
 
 // Verification result for a single checklist item
