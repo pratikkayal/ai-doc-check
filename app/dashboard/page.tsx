@@ -167,6 +167,9 @@ export default function DashboardPage() {
             <Button variant="outline" onClick={() => router.push('/checklists/new')}>
               <Plus className="h-4 w-4 mr-2" /> New Checklist
             </Button>
+            <Button variant="default" onClick={() => router.push('/checklists/generate')}>
+              ✨ Generate with AI
+            </Button>
           </div>
         </div>
 

@@ -7,6 +7,26 @@ import { useDocumentStore } from "@/store/useDocumentStore";
 import { CheckCircle2, X, Loader2, Circle, FileText } from "lucide-react";
 import { motion } from "framer-motion";
 import { VerificationResult } from "@/types";
+import { toast } from "@/hooks/use-toast";
+
+/**
+ * Get user-friendly error message based on error code
+ */
+function getErrorMessage(error: string, code?: string): string {
+  if (!code) return error;
+
+  const errorMessages: Record<string, string> = {
+    'MISSING_PARAMETERS': 'Required information is missing. Please try uploading the document again.',
+    'UNAUTHORIZED': 'Your session has expired. Please log in again.',
+    'DOCUMENT_NOT_FOUND': 'The uploaded document could not be found. Please try uploading again.',
+    'CHECKLIST_NOT_FOUND': 'The selected checklist could not be found. Please select a different checklist.',
+    'CHECKLIST_LOAD_ERROR': 'Failed to load the checklist. The checklist file may be corrupted.',
+    'CHECKLIST_EMPTY': 'The selected checklist has no items to verify. Please edit the checklist first.',
+    'PROCESSING_ERROR': 'An error occurred while processing the document. Please try again.',
+  };
+
+  return errorMessages[code] || error;
+}
 
 function ProcessingContent() {
   const router = useRouter();
@@ -84,19 +104,46 @@ function ProcessingContent() {
           }, 1000);
         } else if (data.type === "error") {
           eventSource?.close();
-          console.error("Processing error:", data.error);
-          router.push("/dashboard");
+          console.error("Processing error:", data);
+
+          // Show user-friendly error message based on error code
+          const errorMessage = getErrorMessage(data.error, data.code);
+          const errorDetail = data.detail ? JSON.stringify(data.detail, null, 2) : undefined;
+
+          toast({
+            title: "Processing Failed",
+            description: (
+              <div className="space-y-2">
+                <p>{errorMessage}</p>
+                {data.code && <p className="text-xs opacity-70">Error Code: {data.code}</p>}
+                {errorDetail && <pre className="text-xs opacity-70 mt-2 overflow-auto max-h-32">{errorDetail}</pre>}
+              </div>
+            ),
+            variant: "destructive",
+          });
+
+          setTimeout(() => router.push("/dashboard"), 2000);
         }
       };
 
       eventSource.onerror = () => {
         eventSource?.close();
-        console.error("EventSource error");
-        router.push("/dashboard");
+        console.error("EventSource connection error");
+        toast({
+          title: "Connection Error",
+          description: "Lost connection to the server. Please try again.",
+          variant: "destructive",
+        });
+        setTimeout(() => router.push("/dashboard"), 2000);
       };
     } catch (error) {
-      console.error("Processing error:", error);
-      router.push("/dashboard");
+      console.error("Processing initialization error:", error);
+      toast({
+        title: "Failed to Start Processing",
+        description: error instanceof Error ? error.message : "An unexpected error occurred. Please try again.",
+        variant: "destructive",
+      });
+      setTimeout(() => router.push("/dashboard"), 2000);
     }
 
     return () => {
