@@ -32,6 +32,8 @@ export default function ReportViewerPage() {
   const [scale, setScale] = useState<number>(1.0);
   const pageContainerRef = useRef<HTMLDivElement>(null);
   const [highlights, setHighlights] = useState<Array<{left:number;top:number;width:number;height:number}>>([]);
+  const [selectedHighlightIdx, setSelectedHighlightIdx] = useState<number>(0);
+  const [noHighlightMsg, setNoHighlightMsg] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState<number>(0);
 
   const pdfFile = useMemo(() => (pdfUrl ? { url: pdfUrl, withCredentials: true } : undefined), [pdfUrl]);
@@ -149,6 +151,8 @@ export default function ReportViewerPage() {
   const handleNextPage = () => setCurrentPage(p => Math.min(numPages, p + 1));
   const handleZoomIn = () => setScale(s => Math.min(3.0, s + 0.2));
   const handleZoomOut = () => setScale(s => Math.max(0.5, s - 0.2));
+  const handlePrevHighlight = () => setSelectedHighlightIdx(i => Math.max(0, i - 1));
+  const handleNextHighlight = () => setSelectedHighlightIdx(i => Math.min(Math.max(0, highlights.length - 1), i + 1));
   // Recompute highlights when page or selection changes
   useEffect(() => {
     const t = setTimeout(() => updateHighlightsForCurrentPage(), 250);
@@ -157,15 +161,15 @@ export default function ReportViewerPage() {
 
   function updateHighlightsForCurrentPage() {
     try {
-      if (!report) return setHighlights([]);
+      if (!report) { setHighlights([]); setNoHighlightMsg(null); return; }
       const selected = report.results.find(r => r.itemId === selectedItemId);
       const anchors: TokenEvidenceAnchor[] = (selected?.evidence?.tokens || []) as TokenEvidenceAnchor[];
       const pageEl = pageContainerRef.current as HTMLElement | null;
-      if (!pageEl || !anchors.length) { setHighlights([]); return; }
+      if (!pageEl || !anchors.length) { setHighlights([]); setNoHighlightMsg(null); return; }
       const textLayer = pageEl.querySelector('.react-pdf__Page__textContent');
-      if (!textLayer) { setHighlights([]); return; }
+      if (!textLayer) { setHighlights([]); setNoHighlightMsg(null); return; }
       const spans = Array.from(textLayer.querySelectorAll('span')) as HTMLSpanElement[];
-      if (!spans.length) { setHighlights([]); return; }
+      if (!spans.length) { setHighlights([]); setNoHighlightMsg(null); return; }
 
       // Build page text and mapping indices to spans
       let offset = 0;
@@ -203,9 +207,12 @@ export default function ReportViewerPage() {
         }
       });
       setHighlights(rects);
+      setSelectedHighlightIdx(0);
+      setNoHighlightMsg(rects.length === 0 ? 'Could not locate evidence on this page. Try other pages or verify token anchors.' : null);
     } catch (e) {
       console.warn('Failed to compute highlights:', e);
       setHighlights([]);
+      setNoHighlightMsg('Failed to compute highlights.');
     }
   }
 
@@ -339,14 +346,26 @@ export default function ReportViewerPage() {
                 <ChevronRight className="h-4 w-4" />
               </Button>
             </div>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={handleZoomOut}>
-                <ZoomOut className="h-4 w-4" />
-              </Button>
-              <span className="text-sm font-medium">{Math.round(scale * 100)}%</span>
-              <Button variant="outline" size="sm" onClick={handleZoomIn}>
-                <ZoomIn className="h-4 w-4" />
-              </Button>
+            <div className="flex items-center gap-4">
+              {/* Highlight navigation */}
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={handlePrevHighlight} disabled={highlights.length === 0 || selectedHighlightIdx <= 0} aria-label="Previous highlight">
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-xs text-gray-600">{highlights.length ? `Highlight ${selectedHighlightIdx + 1} / ${highlights.length}` : 'No highlights'}</span>
+                <Button variant="outline" size="sm" onClick={handleNextHighlight} disabled={highlights.length === 0 || selectedHighlightIdx >= Math.max(0, highlights.length - 1)} aria-label="Next highlight">
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={handleZoomOut}>
+                  <ZoomOut className="h-4 w-4" />
+                </Button>
+                <span className="text-sm font-medium">{Math.round(scale * 100)}%</span>
+                <Button variant="outline" size="sm" onClick={handleZoomIn}>
+                  <ZoomIn className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </div>
 
@@ -362,6 +381,11 @@ export default function ReportViewerPage() {
                 PDF file not found on server. It may have been cleaned up or the name changed. Re-upload and re-process the document to refresh the link.
               </div>
             )}
+            {noHighlightMsg && selectedItemId && (
+              <div className="w-full max-w-3xl px-4 py-2 bg-amber-50 text-amber-800 border border-amber-200 rounded">
+                {noHighlightMsg}
+              </div>
+            )}
             {pdfUrl && workerReady ? (
               <div className="relative bg-white shadow-lg">
                 <PDFDocument key={`${pdfUrl}-${reloadKey}`} file={pdfFile as any} onLoadSuccess={onDocumentLoadSuccess} onLoadError={(e:any)=>{ console.error('PDF load error', e); setPdfErr(String(e)); }} loading={<div className="p-8">Loading PDF...</div>}>
@@ -371,7 +395,8 @@ export default function ReportViewerPage() {
                     {highlights.map((rect, idx) => (
                       <div
                         key={idx}
-                        className={`absolute border-2 ${selectedItemId ? 'border-blue-500 bg-blue-200/30' : 'border-yellow-500 bg-yellow-200/30'} transition-all`}
+                        data-testid="pdf-highlight"
+                        className={`absolute border-2 ${idx === selectedHighlightIdx ? 'border-blue-600 bg-blue-300/40' : (selectedItemId ? 'border-blue-500 bg-blue-200/30' : 'border-yellow-500 bg-yellow-200/30')} transition-all`}
                         style={{ left: rect.left, top: rect.top, width: rect.width, height: rect.height }}
                       />
                     ))}

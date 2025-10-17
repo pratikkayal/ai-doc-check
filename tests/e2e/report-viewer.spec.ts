@@ -86,6 +86,13 @@ test.describe('Report Viewer', () => {
     // Click the first checklist item and allow highlight recompute
     await page.getByText('Item 1').click();
 
+    // Wait briefly for highlight recomputation and assert either highlight(s) or the warning banner
+    await page.waitForTimeout(500);
+    const highlightCount = await page.locator('[data-testid="pdf-highlight"]').count();
+    if (highlightCount === 0) {
+      await expect(page.getByText('Could not locate evidence', { exact: false })).toBeVisible();
+    }
+
     // We can at least verify the page number still visible and no error banners
     await expect(page.getByText(/Page \d+ of \d+/)).toBeVisible();
     await expect(page.getByText('Failed to load PDF', { exact: false })).toHaveCount(0);
