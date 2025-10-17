@@ -10,6 +10,10 @@ interface DocumentStore {
   checklist: ChecklistItem[];
   setChecklist: (items: ChecklistItem[]) => void;
   updateChecklistItem: (id: number, updates: Partial<ChecklistItem>) => void;
+  selectedChecklistId: string | null;
+  setSelectedChecklistId: (id: string | null) => void;
+  selectedChecklistName?: string | null;
+  setSelectedChecklistName?: (name: string | null) => void;
 
   // Document
   document: DocumentMetadata | null;
@@ -43,6 +47,10 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
         item.id === id ? { ...item, ...updates } : item
       ),
     })),
+  selectedChecklistId: null,
+  setSelectedChecklistId: (id) => set({ selectedChecklistId: id }),
+  selectedChecklistName: null,
+  setSelectedChecklistName: (name) => set({ selectedChecklistName: name ?? null }),
 
   // Document
   document: null,
@@ -62,6 +70,8 @@ export const useDocumentStore = create<DocumentStore>((set) => ({
   reset: () =>
     set({
       checklist: [],
+      selectedChecklistId: null,
+      selectedChecklistName: null,
       document: null,
       isProcessing: false,
       currentProcessingItem: null,

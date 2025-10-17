@@ -5,44 +5,56 @@ import { useRouter } from "next/navigation";
 import { useDropzone } from "react-dropzone";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ChecklistItem } from "@/types";
+import { Input } from "@/components/ui/input";
 import { useDocumentStore } from "@/store/useDocumentStore";
-import { Upload, FileText, X, Loader2, CheckCircle2, Circle } from "lucide-react";
+import { Upload, FileText, X, Loader2, CheckCircle2, Circle, Plus } from "lucide-react";
 import { motion } from "framer-motion";
 import { toast } from "@/hooks/use-toast";
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { checklist, setChecklist, document, setDocument, isAuthenticated } = useDocumentStore();
-  
+  const { checklist, setChecklist, setDocument, selectedChecklistId, setSelectedChecklistId, selectedChecklistName, setSelectedChecklistName } = useDocumentStore();
+
   const [isLoading, setIsLoading] = useState(true);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [templates, setTemplates] = useState<Array<{id: string; name: string; description: string; itemCount: number; createdAt: string; updatedAt: string}>>([]);
 
   useEffect(() => {
-    const fetchChecklist = async () => {
+    const init = async () => {
       try {
-        const response = await fetch("/api/checklist");
-        const data = await response.json();
+        // Load available checklists
+        const resList = await fetch('/api/checklists');
+        if (resList.status === 401) { router.push('/'); return; }
+        const listJson = await resList.json();
+        if (listJson.success) setTemplates(listJson.data);
 
-        if (data.success) {
-          setChecklist(data.data);
-        } else if (response.status === 401) {
-          router.push("/");
+        // If none exists, fallback to default checklist for compatibility
+        if (!listJson.success || listJson.data.length === 0) {
+          const response = await fetch("/api/checklist");
+          const data = await response.json();
+          if (data.success) setChecklist(data.data);
+        } else if (selectedChecklistId) {
+          // Load previously selected
+          const sel = listJson.data.find((t: any) => t.id === selectedChecklistId);
+          if (sel) {
+            const res = await fetch(`/api/checklists/${sel.id}`);
+            const json = await res.json();
+            if (json.success) {
+              setChecklist(json.data.items);
+              setSelectedChecklistName?.(json.data.name);
+            }
+          }
         }
       } catch (error) {
-        toast({
-          title: "Error",
-          description: "Failed to load checklist",
-          variant: "destructive",
-        });
+        toast({ title: 'Error', description: 'Failed to load checklists', variant: 'destructive' });
       } finally {
         setIsLoading(false);
       }
     };
 
-    fetchChecklist();
-  }, [router, setChecklist]);
+    init();
+  }, [router, setChecklist, selectedChecklistId, setSelectedChecklistName]);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     accept: {
@@ -72,6 +84,10 @@ export default function DashboardPage() {
 
   const handleProcessDocument = async () => {
     if (!uploadedFile) return;
+    if (!selectedChecklistId) {
+      toast({ title: 'Select Checklist', description: 'Please select a checklist before processing.', variant: 'destructive' });
+      return;
+    }
 
     setIsUploading(true);
 
@@ -99,8 +115,14 @@ export default function DashboardPage() {
         uploadedAt: new Date().toISOString(),
       });
 
-      // Redirect to processing page
-      router.push(`/processing?filename=${uploadData.data.filename}&path=${encodeURIComponent(uploadData.data.path)}`);
+      // Persist selected checklist for downstream pages (defensive)
+      try {
+        sessionStorage.setItem('selectedChecklistId', selectedChecklistId);
+        if (selectedChecklistName) sessionStorage.setItem('selectedChecklistName', selectedChecklistName);
+      } catch {}
+
+      // Redirect to processing page with checklistId
+      router.push(`/processing?filename=${uploadData.data.filename}&path=${encodeURIComponent(uploadData.data.path)}&checklistId=${encodeURIComponent(selectedChecklistId)}`);
     } catch (error) {
       toast({
         title: "Upload Failed",
@@ -136,17 +158,86 @@ export default function DashboardPage() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <div className="max-w-7xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Document Verification</h1>
-          <p className="text-gray-600 mt-2">Upload a document to verify against the checklist</p>
+        <div className="mb-8 flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold text-gray-900">Document Verification</h1>
+            <p className="text-gray-600 mt-2">Select a checklist template or create your own, then upload a document to verify.</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => router.push('/checklists/new')}>
+              <Plus className="h-4 w-4 mr-2" /> New Checklist
+            </Button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
           {/* Left Panel - Checklist */}
-          <div className="lg:col-span-2">
+          <div className="lg:col-span-2 space-y-4">
             <Card>
               <CardHeader>
-                <CardTitle>Verification Checklist</CardTitle>
+                <CardTitle>Step 1: Select Verification Checklist</CardTitle>
+                <CardDescription>Choose a template to use for this document. You can edit or preview before selecting.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {templates.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    {templates.map(t => {
+                      const isSelected = selectedChecklistId === t.id;
+                      const created = new Date(t.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+                      return (
+                        <div key={t.id} className={`border rounded-lg p-4 bg-white ${isSelected ? 'ring-2 ring-primary' : 'hover:shadow-sm'}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <h3 className="font-semibold text-gray-900">{t.name}</h3>
+                              <p className="text-sm text-gray-600 mt-1 line-clamp-2">{t.description}</p>
+                            </div>
+                            <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded-full">{t.itemCount} items</span>
+                          </div>
+                          <p className="text-xs text-gray-500 mt-2">Created: {created}</p>
+                          <div className="mt-3 flex items-center gap-2">
+                            <Button size="sm" aria-label={`Select checklist ${t.name}`} onClick={async () => {
+                              setSelectedChecklistId(t.id);
+                              const res = await fetch(`/api/checklists/${t.id}`);
+                              const json = await res.json();
+                              if (json.success) {
+                                setChecklist(json.data.items);
+                                setSelectedChecklistName?.(json.data.name);
+                              }
+                            }}>Select</Button>
+                            <Button size="sm" variant="outline" aria-label={`Edit checklist ${t.name}`} onClick={() => router.push(`/checklists/edit/${t.id}`)}>Edit</Button>
+                            <Button size="sm" variant="ghost" aria-label={`Preview checklist ${t.name}`} onClick={async () => {
+                              if (selectedChecklistId !== t.id) {
+                                // lazy load preview items if not selected yet
+                                const res = await fetch(`/api/checklists/${t.id}`);
+                                const json = await res.json();
+                                if (json.success) {
+                                  setChecklist(json.data.items);
+                                  setSelectedChecklistName?.(json.data.name);
+                                  setSelectedChecklistId(t.id);
+                                }
+                              }
+                            }}>Preview</Button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {/* Create new checklist card */}
+                    <div className="border-2 border-dashed rounded-lg p-4 flex items-center justify-center text-gray-500 hover:bg-gray-50 cursor-pointer" onClick={() => router.push('/checklists/new')}>
+                      <div className="text-center">
+                        <div className="font-semibold">+ Create New Checklist</div>
+                        <div className="text-sm">Start from scratch</div>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-gray-600">No templates yet. Create one to get started.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Verification Checklist {selectedChecklistName ? `— ${selectedChecklistName}` : ''}</CardTitle>
                 <CardDescription>{checklist.length} items to verify</CardDescription>
               </CardHeader>
               <CardContent>

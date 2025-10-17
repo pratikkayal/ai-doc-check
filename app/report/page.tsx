@@ -128,6 +128,16 @@ export default function ReportPage() {
           </div>
         </div>
 
+        {/* Checklist Metadata */}
+        {report.checklistName && (
+          <div className="bg-blue-50 border p-4 rounded-md mb-6">
+            <h2 className="font-semibold">Checklist: {report.checklistName}</h2>
+            {report.checklistDescription && (
+              <p className="text-sm text-gray-600">{report.checklistDescription}</p>
+            )}
+          </div>
+        )}
+
         {/* Summary Card */}
         <Card className="mb-6">
           <CardHeader>

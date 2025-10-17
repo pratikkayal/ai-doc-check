@@ -1,0 +1,24 @@
+{
+  "id": "small-resume-checklist",
+  "name": "Small Resume Checklist",
+  "description": "Minimal resume verification: contact, work experience, and education.",
+  "items": [
+    {
+      "id": 1,
+      "description": "Contact Information",
+      "criteria": "Full name, phone number, email address, and location (city/state) clearly visible at the top of resume"
+    },
+    {
+      "id": 2,
+      "description": "Work Experience Section",
+      "criteria": "Work experience with job titles, company names, employment dates (month/year format), and detailed responsibilities or achievements"
+    },
+    {
+      "id": 3,
+      "description": "Education History",
+      "criteria": "Educational background including degree(s), institution name(s), graduation date(s) or expected graduation date"
+    }
+  ],
+  "createdAt": "2025-10-17T12:40:40.290Z",
+  "updatedAt": "2025-10-17T14:29:11.803Z"
+}

@@ -70,7 +70,10 @@ test.describe('Full Flow: upload → processing → report → interactive viewe
     // Go to dashboard and wait for checklist load
     await page.goto('/dashboard');
     await expect(page.getByRole('heading', { name: 'Document Verification' })).toBeVisible();
-    await expect(page.getByText('Verification Checklist')).toBeVisible();
+    await expect(page.getByText('Step 1: Select Verification Checklist')).toBeVisible();
+
+    // Select preset checklist via card
+    await page.getByRole('button', { name: 'Select checklist Small Resume Checklist' }).click();
 
     // Upload file via hidden input from react-dropzone
     const input = page.locator('input[type="file"]');
@@ -145,6 +148,7 @@ test.describe('Full Flow: upload → processing → report → interactive viewe
 
     await login(page);
     await page.goto('/dashboard');
+    await page.getByRole('button', { name: 'Select checklist Small Resume Checklist' }).click();
     await page.locator('input[type="file"]').setInputFiles(fixturePdf);
     await page.getByRole('button', { name: 'Process Document' }).click();
     await expect(page).toHaveURL('/report', { timeout: 120_000 });

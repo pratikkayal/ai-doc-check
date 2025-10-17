@@ -44,6 +44,11 @@ export interface VerificationReport {
     failed: number;
     successRate: number;
   };
+  // Optional checklist metadata
+  checklistId?: string;
+  checklistName?: string;
+  checklistDescription?: string;
+  checklistCreatedAt?: string;
 }
 
 // Document upload metadata
@@ -70,3 +75,61 @@ export interface SessionData {
   isAuthenticated: boolean;
 }
 
+
+
+// Checklist item definition used for templates (no runtime status/evidence)
+export interface ChecklistItemDefinition {
+  id: number;
+  description: string;
+  criteria: string;
+}
+
+// Checklist template/definition metadata
+export interface ChecklistDefinition {
+  id: string;
+  name: string;
+  description: string;
+  items: ChecklistItemDefinition[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+// SSE protocol payloads for /api/process (server -> client)
+/**
+ * Sent when processing of a specific item starts.
+ */
+export interface ProcessingEvent {
+  type: 'processing';
+  itemId: number;
+}
+
+/**
+ * Sent when a result for an item is available.
+ */
+export interface ResultEvent {
+  type: 'result';
+  data: VerificationResult;
+}
+
+/**
+ * Sent after all items have been processed.
+ */
+export interface CompleteEvent {
+  type: 'complete';
+  checklistId?: string;
+  checklistName?: string;
+  checklistDescription?: string;
+  checklistCreatedAt?: string;
+}
+
+/**
+ * Sent when a fatal error occurs. The client should stop processing and navigate away.
+ */
+export interface ErrorEvent {
+  type: 'error';
+  error: string;       // human-friendly message
+  code?: string;       // optional machine-friendly code
+  detail?: any;        // optional additional context to aid debugging
+}
+
+export type ProcessSSEvent = ProcessingEvent | ResultEvent | CompleteEvent | ErrorEvent;

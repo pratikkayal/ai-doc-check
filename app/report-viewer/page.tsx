@@ -260,6 +260,16 @@ export default function ReportViewerPage() {
         </div>
       </div>
 
+      {/* Checklist Metadata */}
+      {report.checklistName && (
+        <div className="bg-blue-50 border-b px-6 py-3">
+          <h2 className="font-semibold">Checklist: {report.checklistName}</h2>
+          {report.checklistDescription && (
+            <p className="text-sm text-gray-600">{report.checklistDescription}</p>
+          )}
+        </div>
+      )}
+
       {/* Main Content - Split Screen */}
       <div className="flex h-[calc(100vh-80px)]">
         {/* Left Panel - Checklist */}

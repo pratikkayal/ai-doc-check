@@ -13,14 +13,15 @@ function ProcessingContent() {
   const searchParams = useSearchParams();
   const filename = searchParams.get("filename");
   const documentPath = searchParams.get("path");
+  const checklistId = searchParams.get("checklistId");
 
   const { checklist, setChecklist, updateChecklistItem, setReport, setCurrentProcessingItem } = useDocumentStore();
-  
+
   const [progress, setProgress] = useState(0);
   const [results, setResults] = useState<VerificationResult[]>([]);
 
   useEffect(() => {
-    if (!filename || !documentPath) {
+    if (!filename || !documentPath || !checklistId) {
       router.push("/dashboard");
       return;
     }
@@ -34,16 +35,16 @@ function ProcessingContent() {
 
     try {
       eventSource = new EventSource(
-        `/api/process?filename=${encodeURIComponent(filename)}&documentPath=${encodeURIComponent(documentPath)}`
+        `/api/process?filename=${encodeURIComponent(filename)}&documentPath=${encodeURIComponent(documentPath)}&checklistId=${encodeURIComponent(checklistId)}`
       );
 
       eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
+        const data = JSON.parse(event.data) as import('@/types').ProcessSSEvent;
 
-        if (data.type === "processing") {
+        if (data.type === 'processing') {
           setCurrentProcessingItem(data.itemId);
-          updateChecklistItem(data.itemId, { status: "processing" });
-        } else if (data.type === "result") {
+          updateChecklistItem(data.itemId, { status: 'processing' });
+        } else if (data.type === 'result') {
           const result: VerificationResult = data.data;
           collectedResults.push(result);
           setResults([...collectedResults]);
@@ -52,7 +53,7 @@ function ProcessingContent() {
             evidence: result.evidence,
           });
           setProgress((collectedResults.length / checklist.length) * 100);
-        } else if (data.type === "complete") {
+        } else if (data.type === 'complete') {
           eventSource?.close();
 
           // Calculate summary
@@ -71,6 +72,10 @@ function ProcessingContent() {
               failed,
               successRate: (passed / checklist.length) * 100,
             },
+            // Metadata from server 'complete' event
+            checklistId: data.checklistId,
+            checklistName: data.checklistName,
+            checklistDescription: data.checklistDescription,
           });
 
           // Redirect to report page
